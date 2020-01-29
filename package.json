@@ -38,7 +38,6 @@
     "unit-test": "node ./node_modules/mocha/bin/_mocha -u tdd --timeout 5000 --colors ./out/test/unit",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\""
   },
-  "extensionDependencies": [],
   "dependencies": {
     "diff": "^4.0.1",
     "json-rpc2": "^1.0.2",
@@ -48,6 +47,8 @@
     "vscode-debugprotocol": "^1.36.0",
     "vscode-extension-telemetry": "^0.1.2",
     "vscode-languageclient": "^6.0.1",
+    "vscode-test-adapter-api": "^1.7.0",
+    "vscode-test-adapter-util": "^0.7.0",
     "web-request": "^1.0.7"
   },
   "devDependencies": {
@@ -65,6 +66,9 @@
     "vscode-test": "^1.2.3",
     "prettier": "^1.16.4"
   },
+  "extensionDependencies": [
+    "hbenl.vscode-test-explorer"
+  ],
   "engines": {
     "vscode": "^1.30.0"
   },
@@ -326,7 +330,11 @@
         "description": "Restart the running instance of the language server"
       }
     ],
-    "breakpoints": [{ "language": "go" }],
+    "breakpoints": [
+      {
+        "language": "go"
+      }
+    ],
     "debuggers": [
       {
         "type": "go",
@@ -977,6 +985,16 @@
             "uncoveredGutterStyle": "slashyellow"
           },
           "description": "This option lets you choose the way to display code coverage. Choose either to highlight the complete line or to show a decorator in the gutter. You can customize the color for the former and the style for the latter.",
+          "scope": "resource"
+        },
+        "go.testExplorer.logpanel": {
+          "description": "Write diagnostic logs to an output panel",
+          "type": "boolean",
+          "scope": "resource"
+        },
+        "go.testExplorer.logfile": {
+          "description": "Write diagnostic logs to the given file",
+          "type": "string",
           "scope": "resource"
         },
         "go.testTimeout": {
