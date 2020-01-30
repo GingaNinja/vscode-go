@@ -1,5 +1,5 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
-import * as path from "path";
 import {
 	TestAdapter,
 	TestEvent,
@@ -11,10 +11,16 @@ import {
 } from 'vscode-test-adapter-api';
 import { TestInfo, TestSuiteInfo } from 'vscode-test-adapter-api';
 import { Log } from 'vscode-test-adapter-util';
-import { getTestFunctions, findAllTestSuiteRuns, extractInstanceTestName } from './testUtils';
-import { byteOffsetAt } from './util';
+import { isModSupported } from './goModules';
+import { extractInstanceTestName, findAllTestSuiteRuns, getTestFlags, getTestFunctions, goTest, TestConfig, } from './testUtils';
+import { byteOffsetAt, getGoConfig } from './util';
 const fs = require('fs').promises;
 
+interface SuiteWrapper {
+	item: (TestSuiteInfo | TestInfo);
+	functionName: string;
+	testSuites: string[];
+}
 export class GoTestAdapter implements TestAdapter {
 
 	get tests(): vscode.Event<TestLoadStartedEvent | TestLoadFinishedEvent> { return this.testsEmitter.event; }
@@ -34,40 +40,13 @@ export class GoTestAdapter implements TestAdapter {
 			TestEvent>();
 	private readonly autorunEmitter = new vscode.EventEmitter<void>();
 
-	private nodesById = new Map<string, TestSuiteInfo | TestInfo>();
+	private nodesById = new Map<string, SuiteWrapper>();
 
-	private fakeTestSuite: TestSuiteInfo = {
+	private dummySuite: TestSuiteInfo = {
 		type: 'suite',
 		id: 'root',
 		label: 'Fake', // the label of the root node should be the name of the testing framework
 		children: [
-			{
-				type: 'suite',
-				id: 'nested',
-				label: 'Nested suite',
-				children: [
-					{
-						type: 'test',
-						id: 'test1',
-						label: 'Test #1'
-					},
-					{
-						type: 'test',
-						id: 'test2',
-						label: 'Test #2'
-					}
-				]
-			},
-			{
-				type: 'test',
-				id: 'test3',
-				label: 'Test #3'
-			},
-			{
-				type: 'test',
-				id: 'test4',
-				label: 'Test #4'
-			}
 		]
 	};
 
@@ -88,9 +67,8 @@ export class GoTestAdapter implements TestAdapter {
 
 		this.testsEmitter.fire(<TestLoadStartedEvent>{ type: 'started' });
 
-		const loadedTests = await this.loadTests();
 		this.nodesById.clear();
-		this.collectNodesById(loadedTests);
+		const loadedTests = await this.loadTests();
 
 		this.testsEmitter.fire(<TestLoadFinishedEvent>{ type: 'finished', suite: loadedTests });
 	}
@@ -124,47 +102,47 @@ export class GoTestAdapter implements TestAdapter {
 		this.disposables = [];
 	}
 	private async runNode(
-		node: TestSuiteInfo | TestInfo,
+		node: SuiteWrapper,
 		testStatesEmitter: vscode.EventEmitter<TestRunStartedEvent | TestRunFinishedEvent | TestSuiteEvent | TestEvent>
 	): Promise<void> {
-		if (node.type === 'suite') {
-			testStatesEmitter.fire(<TestSuiteEvent>{ type: 'suite', suite: node.id, state: 'running' });
+		if (node.item.type === 'suite') {
+			testStatesEmitter.fire(<TestSuiteEvent>{ type: 'suite', suite: node.item.id, state: 'running' });
 
-			for (const child of node.children) {
-				await this.runNode(child, testStatesEmitter);
+			for (const child of node.item.children) {
+				const childNode = this.nodesById.get(child.id);
+				await this.runNode(childNode, testStatesEmitter);
 			}
 
-			testStatesEmitter.fire(<TestSuiteEvent>{ type: 'suite', suite: node.id, state: 'completed' });
+			testStatesEmitter.fire(<TestSuiteEvent>{ type: 'suite', suite: node.item.id, state: 'completed' });
 		} else {
-			testStatesEmitter.fire(<TestEvent>{ type: 'test', test: node.id, state: 'running' });
+			testStatesEmitter.fire(<TestEvent>{ type: 'test', test: node.item.id, state: 'running' });
 
-			const testMethodRegex = /^\(([^)]+)\)\.(Test.*)$/;
-			const match = node.id.match(testMethodRegex);
-	if (!match || match.length !== 3) {
-		return null;
-	}
-	return match[2];
-			const testConfigFns = [node.id];
-	if (cmd !== 'benchmark' && extractInstanceTestName(testFunctionName)) {
-		testConfigFns.push(...findAllTestSuiteRuns(editor.document, testFunctions).map((t) => t.name));
-	}
+			const testConfigFns = [node.functionName];
+			const fileUri = vscode.Uri.file(node.item.file);
+			if (extractInstanceTestName(node.functionName)) {
+				testConfigFns.push(...node.testSuites);
+			}
+			const goConfig = getGoConfig();
+			const isMod = await isModSupported(fileUri);
+			const testConfig: TestConfig = {
+				goConfig,
+				dir: path.dirname(node.item.file),
+				flags: getTestFlags(goConfig),
+				functions: testConfigFns,
+				isBenchmark: false,
+				isMod,
+				applyCodeCoverage: goConfig.get<boolean>('coverOnSingleTest')
+			};
+			// Remember this config as the last executed test.
+			// lastTestConfig = testConfig;
+			let state = '';
+			if (await goTest(testConfig)) {
+				state = 'passed';
+			} else {
+				state = 'failed';
+			}
 
-	const isMod = await isModSupported(editor.document.uri);
-	const testConfig: TestConfig = {
-		goConfig,
-		dir: path.dirname(editor.document.fileName),
-		flags: getTestFlags(goConfig, args),
-		functions: testConfigFns,
-		isBenchmark: cmd === 'benchmark',
-		isMod,
-		applyCodeCoverage: goConfig.get<boolean>('coverOnSingleTest')
-	};
-	// Remember this config as the last executed test.
-	lastTestConfig = testConfig;
-	return goTest(testConfig);
-
-
-			testStatesEmitter.fire(<TestEvent>{ type: 'test', test: node.id, state: 'passed' });
+			testStatesEmitter.fire(<TestEvent>{ type: 'test', test: node.item.id, state });
 		}
 	}
 
@@ -175,7 +153,7 @@ export class GoTestAdapter implements TestAdapter {
 			const uri = vscode.Uri.file(srcLocation);
 			return Promise.resolve<TestSuiteInfo>(this.walk(uri.fsPath));
 		} else {
-			return Promise.resolve<TestSuiteInfo>(this.fakeTestSuite);
+			return Promise.resolve<TestSuiteInfo>(this.dummySuite);
 		}
 	}
 
@@ -196,6 +174,7 @@ export class GoTestAdapter implements TestAdapter {
 					child = await this.walk(path.join(dir, file), child);
 					if (child.children.length > 0) {
 						fileList.children.push(child);
+						this.nodesById.set(child.id, {item: child, functionName: '', testSuites: []});
 					}
 				} else {
 					if (file.endsWith('_test.go')) {
@@ -204,24 +183,28 @@ export class GoTestAdapter implements TestAdapter {
 						const testFunctions = await getTestFunctions(doc, null);
 						const testSuites = findAllTestSuiteRuns(doc, testFunctions);
 
+						const testSuiteNames = testSuites.map((suite) => {
+							return suite.name;
+						});
 						for (const suite of testSuites) {
 							this.log.info(`	suite: ${suite.name}`);
-							let offset = byteOffsetAt(doc, suite.range.start);
-							this.log.info(`offset: ${offset} - file: ${doc.fileName}`);
 						}
 						let suiteTest = '';
-						let children: (TestInfo | TestSuiteInfo )[] =
+						const children: (TestInfo | TestSuiteInfo )[] =
 							testFunctions.filter(
 								(s) => !testSuites.includes(s)).sort((a, b) => a.name.localeCompare(b.name)).map((symbol) => {
 									const rawTestName = extractInstanceTestName(symbol.name);
-									return {
+									const id = `${fileList.id}_${suiteTest.length > 0 ? suiteTest : file}_${symbol.name}`;
+									const item: TestInfo = {
 										type: 'test',
 										description: suiteTest,
-										id: `${fileList.id}_${suiteTest.length > 0 ? suiteTest : file}_${symbol.name}`,
-										label: rawTestName,
+										id,
+										label: rawTestName ? rawTestName : symbol.name,
 										file: path.join(dir, file),
 										line: symbol.range.start.line
 									};
+									this.nodesById.set(id, {item, functionName: symbol.name, testSuites: rawTestName ? testSuiteNames : []});
+									return item;
 						});
 						// const suiteChildren: TestSuiteInfo[] = testSuites.map((symbol) => {
 						// 	return {
@@ -232,28 +215,17 @@ export class GoTestAdapter implements TestAdapter {
 						// 	};
 						// });
 						// children.push(...suiteChildren);
-
-						fileList.children.push(
-							{
-								type: 'suite',
-								id: path.join(dir, file),
-								label: suiteTest.length > 0 ? suiteTest : file,
-								children
-							}
-						);
+						const fileItem: TestSuiteInfo = {
+							type: 'suite',
+							id: path.join(dir, file),
+							label: suiteTest.length > 0 ? suiteTest : file,
+							children
+						};
+						fileList.children.push(fileItem);
+						this.nodesById.set(fileItem.id, {item: fileItem, functionName: '', testSuites: []});
 					}
 				}
 			}
 			return fileList;
 	}
-
-	private collectNodesById(info: TestSuiteInfo | TestInfo): void {
-		this.nodesById.set(info.id, info);
-		if (info.type === 'suite') {
-			for (const child of info.children) {
-				this.collectNodesById(child);
-			}
-		}
-	}
-
 }
