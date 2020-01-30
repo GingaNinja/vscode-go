@@ -73,6 +73,12 @@ export class GoTestAdapter implements TestAdapter {
 		this.testsEmitter.fire(<TestLoadFinishedEvent>{ type: 'finished', suite: loadedTests });
 	}
 
+	public checkForTests(this: void, e: vscode.TextDocumentChangeEvent) {
+		if (!e.document.uri.fsPath.endsWith('_test.go')) {
+			return;
+		}
+	}
+
 	public async run(tests: string[]): Promise<void> {
 		this.log.info(`Running tests ${JSON.stringify(tests)}`);
 

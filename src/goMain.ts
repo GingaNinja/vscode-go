@@ -141,6 +141,28 @@ export function activate(ctx: vscode.ExtensionContext): void {
 		}
 	});
 
+	const workspaceFolder = (vscode.workspace.workspaceFolders || [])[0];
+
+	const log = new Log('go.testExplorer', workspaceFolder, 'Go Test Explorer Log');
+	ctx.subscriptions.push(log);
+
+	const testExplorerAdapter = new GoTestAdapter(workspaceFolder, log);
+
+	const testExplorerExtension = vscode.extensions.getExtension<TestHub>(testExplorerExtensionId);
+	if (log.enabled) {log.info(`Test Explorer ${testExplorerExtensionId ? '' : 'not '}found`); }
+
+	if (testExplorerExtensionId) {
+		const testHub = testExplorerExtension.exports;
+
+		ctx.subscriptions.push(new TestAdapterRegistrar(
+			testHub,
+			(_) => {
+				return testExplorerAdapter;
+			},
+			log
+		));
+	}
+
 	initCoverageDecorators(ctx);
 
 	ctx.subscriptions.push(
@@ -169,6 +191,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
 	ctx.subscriptions.push(vetDiagnosticCollection);
 
 	addOnChangeTextDocumentListeners(ctx);
+	vscode.workspace.onDidChangeTextDocument(testExplorerAdapter.checkForTests, ctx, ctx.subscriptions);
 	addOnChangeActiveTextEditorListeners(ctx);
 	addOnSaveTextDocumentListeners(ctx);
 
@@ -493,26 +516,6 @@ export function activate(ctx: vscode.ExtensionContext): void {
 				});
 		})
 	);
-
-	const workspaceFolder = (vscode.workspace.workspaceFolders || [])[0];
-
-	const log = new Log('go.testExplorer', workspaceFolder, 'Go Test Explorer Log');
-	ctx.subscriptions.push(log);
-
-	const testExplorerExtension = vscode.extensions.getExtension<TestHub>(testExplorerExtensionId);
-	if (log.enabled) {log.info(`Test Explorer ${testExplorerExtensionId ? '' : 'not '}found`); }
-
-	if (testExplorerExtensionId) {
-		const testHub = testExplorerExtension.exports;
-
-		ctx.subscriptions.push(new TestAdapterRegistrar(
-			testHub,
-			workspaceFolder => {
-				return new GoTestAdapter(workspaceFolder, log);
-			},
-			log
-		));
-	}
 
 	vscode.languages.setLanguageConfiguration(GO_MODE.language, {
 		wordPattern: /(-?\d*\.\d\w*)|([^\`\~\!\@\#\%\^\&\*\(\)\-\=\+\[\{\]\}\\\|\;\:\'\"\,\.\<\>\/\?\s]+)/g
